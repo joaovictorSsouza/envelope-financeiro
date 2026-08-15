@@ -46,15 +46,33 @@ PROVEDOR_PADRAO: Final[str] = "google"
 """Sobrescrito por PROVEDOR no .env."""
 
 MODELOS_PADRAO: Final[dict[str, str]] = {
-    "google": "gemini-3.7-flash",
+    "google": "gemini-3.5-flash-lite",
     "anthropic": "claude-sonnet-5",
 }
 """Modelo de cada provedor quando MODELO não está no .env.
 
-`gemini-2.5-flash` não serve: a API o recusa para chaves novas com 404
-"no longer available to new users", mesmo aparecendo em `models.list()`.
-Alguns modelos (o 3.6-flash, por exemplo) ignoram `temperature` e avisam
-isso num UserWarning — o 3.7-flash respeita.
+O padrão do Google é `gemini-3.5-flash-lite` por causa da cota, e a diferença
+não é de grau: no free tier a família `flash` tem **20 requisições por dia**
+e a família `flash-lite` tem MEDIDO_RPD_LITE. Um turno de conversa gasta
+1 requisição por ida ao modelo, e um turno com tool costuma gastar 2 ou 3;
+com 20/dia o agente morre no meio da primeira conversa do dia. Os números
+foram medidos contra a API, não lidos na documentação: o corpo do 429 traz
+`limit: N` junto do `quotaId`. O README tem a tabela completa.
+
+O que se perde é pouco: na bateria com as 17 tools o lite acertou tanto
+quanto o flash, e responde em ~2,3s contra 9–17s do flash.
+
+Duas armadilhas já pagas:
+
+- `gemini-2.5-*` não serve: a API os recusa para chaves novas com 404 "no
+  longer available to new users", mesmo aparecendo em `models.list()`.
+- Os apelidos (`gemini-flash-lite-latest`) resolvem para um modelo concreto
+  e dividem o balde de cota com ele — não rendem cota extra, e mudam de
+  modelo sem aviso. Por isso aqui se fixa a versão.
+
+`flash-lite` ignora `temperature` (usa sampling fixo) e avisa num UserWarning.
+Como TEMPERATURA_PADRAO é 0.0, o que se perde é só a possibilidade de subir a
+temperatura — quem quiser isso usa PROVEDOR=anthropic ou MODELO=gemini-3.5-flash.
 """
 
 CHAVES: Final[dict[str, str]] = {

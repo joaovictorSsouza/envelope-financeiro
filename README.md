@@ -1,9 +1,9 @@
-# Agente Financeiro — Fases 1 a 3 (dados, regras, ferramentas e agente)
+# Agente Financeiro — Fases 1 a 4 (dados, regras, ferramentas, agente e bot)
 
 Camada de dados e regras de negócio de um agente financeiro pessoal, as
-ferramentas que expõem essas regras a um modelo e o agente que conversa. **Não
-há Telegram aqui** — a interface é o terminal. Os números continuam sendo
-calculados em Python puro: nenhum valor pode sair de um LLM.
+ferramentas que expõem essas regras a um modelo, o agente que conversa e o bot
+do Telegram que transporta mensagens. Os números continuam sendo calculados em
+Python puro: nenhum valor pode sair de um LLM.
 
 A planilha não é acessada por gspread nem pela Google Sheets API: ela é
 exposta por um Web App do Google Apps Script que responde a POST com JSON.
@@ -12,7 +12,7 @@ exposta por um Web App do Google Apps Script que responde a POST com JSON.
 
 ```powershell
 pip install -r requirements.txt
-copy .env.example .env   # e preencha WEBAPP_URL e API_TOKEN
+copy .env.example .env   # e preencha WEBAPP_URL, API_TOKEN e as chaves usadas
 python scripts/testar_conexao.py
 ```
 
@@ -27,6 +27,7 @@ O `.env` está no `.gitignore` e nunca deve ser versionado.
 | Regras | `src/financas.py` | Cálculo puro, offline, testável sem rede nem token |
 | Ferramentas | `src/tools.py` | Casca fina: lê da API, chama `financas.py`, devolve JSON |
 | Conversa | `src/agente.py` + `src/prompts/sistema.md` | Modelo, prompt, contexto do turno e memória por thread |
+| Telegram | `src/bot.py` | Transporte: recebe texto, chama o agente e devolve texto |
 
 A dependência é de mão única: `financas.py` **não** importa `sheets.py` e não
 faz I/O — recebe o DataFrame e a config como argumentos.
@@ -240,7 +241,7 @@ lançamento é, quem pergunta é o agente.
 
 ## `agente.py` — a camada de conversa
 
-`create_react_agent` (langgraph) com `MemorySaver` e o modelo do provedor
+`create_agent` (langchain) com `MemorySaver` e o modelo do provedor
 configurado no `.env`.
 
 | Variável | Obrigatória | Padrão | Observação |
@@ -248,7 +249,7 @@ configurado no `.env`.
 | `PROVEDOR` | não | `google` | `google` ou `anthropic` |
 | `GOOGLE_API_KEY` | se `PROVEDOR=google` | — | [aistudio.google.com/apikey](https://aistudio.google.com/apikey) — grátis, sem cartão |
 | `ANTHROPIC_API_KEY` | se `PROVEDOR=anthropic` | — | [console.anthropic.com](https://console.anthropic.com/settings/keys) |
-| `MODELO` | não | `gemini-3.7-flash` / `claude-sonnet-5` | o padrão depende do provedor |
+| `MODELO` | não | `gemini-3.5-flash-lite` / `claude-sonnet-5` | o padrão depende do provedor — ver [Qual modelo do Gemini](#qual-modelo-do-gemini) |
 | `TEMPERATURA` | não | `0` | um agente que não pode calcular não tem uso para criatividade |
 
 `construir_modelo()` resolve tudo isso e falha na largada, com o nome da
@@ -273,6 +274,14 @@ de planejamento e fase do mês, todos vindos de `financas.py`. O bloco **não**
 entra no histórico: é remontado a cada turno, então uma conversa aberta durante
 a virada do mês não continua respondendo sobre o mês anterior. Todo
 `date.today()` do módulo está em `agente._hoje`, e os testes injetam `hoje`.
+
+Quem faz isso é o middleware `dynamic_prompt`. No `create_react_agent` era um
+callable `prompt=state -> [SystemMessage, *mensagens]`; o `create_agent` não
+recebe mais callable de prompt — seu `system_prompt` é estático, e quem varia o
+texto por turno é o middleware, que devolve só o system prompt e deixa o agente
+prepará-lo às mensagens do estado. O que chega ao modelo é idêntico: um único
+`SystemMessage` na primeira posição, remontado a cada ida ao LLM, inclusive na
+volta depois de uma tool.
 
 `conversar(agente, mensagem, thread_id)` devolve `(resposta, chamadas_de_tool)`.
 As chamadas são só as do último turno — é o que o `--debug` imprime.
@@ -299,9 +308,44 @@ vezes. É isso que impede `confirmar_geracao_mes` de duplicar o mês inteiro.
 
 O `thread_id` vem de `ensure_config()`, lido do contexto que o LangGraph já
 injeta — as assinaturas das tools não mudaram, e o schema exposto ao modelo
-continua idêntico. Fora de uma conversa a thread vira `"sem-thread"`, e o guard
-continua valendo. O registro é de processo, como o `MemorySaver`: reiniciar
+continua idêntico. Isso sobreviveu à troca do `create_react_agent` pelo
+`create_agent`: o `config` com o `configurable.thread_id` continua chegando às
+tools pelo mesmo caminho, e o isolamento por thread continua valendo (simular na
+thread A não libera confirmar na thread B). Fora de uma conversa a thread vira
+`"sem-thread"`, e o guard continua valendo. O registro é de processo, como o `MemorySaver`: reiniciar
 apaga, e o usuário simula de novo.
+
+## `bot.py` — Telegram
+
+O bot é a última camada e não contém regra de negócio: ele valida o chat,
+encaminha o texto para `agente.conversar(...)` e devolve a resposta em texto
+simples. O `thread_id` vem do `chat_id`, então a conversa continua entre
+mensagens. O comando `/novo` troca a thread e começa um histórico limpo.
+
+Variáveis no `.env`:
+
+| Variável | Obrigatória | Observação |
+|---|---|---|
+| `TELEGRAM_TOKEN` | sim | Token do bot criado no BotFather |
+| `TELEGRAM_CHAT_ID` | sim | Único chat autorizado; outros chats recebem "este bot é privado" |
+
+Comandos:
+
+| Comando | O que faz |
+|---|---|
+| `/start` | Mostra uma mensagem curta sobre o bot |
+| `/novo` | Limpa o histórico e inicia uma nova thread para o chat |
+| `/ajuda` | Mostra exemplos reais do que pedir |
+
+Para rodar localmente com polling:
+
+```powershell
+python -m src.bot
+```
+
+Não há webhook nem deploy nesta fase. Durante um turno, o bot envia
+`typing...`; respostas acima do limite do Telegram são divididas, e erros do
+agente viram mensagens amigáveis em português.
 
 ### Retry do modelo
 
@@ -364,9 +408,9 @@ certa. A *escolha* da tool é do modelo real e nenhum teste offline a cobre.
 
 ## Escopo destas fases
 
-Fora: bot do Telegram. Dentro: `api.py`, `sheets.py`, `financas.py`, `tools.py`,
-`agente.py`, o prompt e os testes. A camada de conversa consome as ferramentas e
-nunca recalcula nada por conta própria.
+Dentro: `api.py`, `sheets.py`, `financas.py`, `tools.py`, `agente.py`, o prompt,
+`bot.py` e os testes. A camada de conversa consome as ferramentas e nunca
+recalcula nada por conta própria; o bot só transporta mensagens.
 
 Ainda não existe ferramenta para registrar uma **entrada** nova, para **apagar**
 um lançamento nem para **listar as categorias** válidas. O prompt declara os
