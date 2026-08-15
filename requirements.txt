@@ -1,0 +1,14 @@
+requests>=2.31
+python-dotenv>=1.0
+pandas>=2.2
+numpy>=1.26
+# langchain>=1.0 traz o create_agent, que substituiu o create_react_agent
+# (depreciado no langgraph.prebuilt). O piso 1.0 vale para os três pacotes
+# do núcleo: abaixo disso o create_agent e o middleware dynamic_prompt não
+# existem.
+langchain>=1.0
+langchain-core>=1.0
+langchain-google-genai>=2.0
+langchain-anthropic>=0.3
+langgraph>=1.0
+pytest>=8.0
