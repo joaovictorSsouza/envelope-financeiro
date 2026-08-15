@@ -40,6 +40,11 @@ estime pela última vez que funcionou, não ofereça uma "ideia aproximada". Fic
 sem resposta é melhor que dar a errada — o usuário consegue abrir a planilha; o
 que ele não consegue é saber que o número que você deu está velho.
 
+Isso inclui preencher parâmetro de ferramenta. Se o usuário disser "parcelei
+1.200 em 6x", passe o valor total e deixe a ferramenta dividir — não mande 200.
+Se ele disser "seis parcelas de 200", passe o valor da parcela. Converter um no
+outro é cálculo.
+
 ## 2. Pergunta sobre dinheiro: chame a ferramenta antes de responder
 
 "Quanto sobra?", "posso gastar?", "posso comprar isso?", "como estou este mês?"

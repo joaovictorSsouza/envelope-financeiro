@@ -156,6 +156,8 @@ def test_system_prompt_traz_as_regras_que_o_agente_depende() -> None:
     assert "confirmar_parcelamento" in prompt
     assert "simular_parcelamento" in prompt
     assert "ambiguo" in prompt or "ambiguidade" in prompt
+    # Preencher parâmetro também é lugar de cálculo — e o pior deles.
+    assert "deixe a ferramenta dividir" in prompt
 
 
 def test_prompt_vazio_e_erro_e_nao_prompt_neutro(tmp_path: Any) -> None:
@@ -789,12 +791,15 @@ def test_opcionais_viram_nullable_e_ficam_fora_de_required() -> None:
     parcelamento = por_nome["confirmar_parcelamento"].parameters
     assert set(parcelamento.required or []) == {
         "descricao",
-        "valor_parcela",
         "n_parcelas",
         "mes_inicial",
         "categoria",
     }
     assert parcelamento.properties["dia_do_mes"].nullable
+    # Os dois lados do valor são opcionais no schema porque são excludentes:
+    # quem cobra exatamente um dos dois é a tool, não o JSON Schema.
+    assert parcelamento.properties["valor_total"].nullable
+    assert parcelamento.properties["valor_parcela"].nullable
 
 
 def test_bind_das_tools_nos_dois_provedores(env_limpo: pytest.MonkeyPatch) -> None:

@@ -408,12 +408,18 @@ def adicionar_parcelamento(
     mes_inicial: str,
     categoria: str,
     dia_do_mes: int,
+    valor_ultima_parcela: float | None = None,
     dry_run: bool = True,
 ) -> list[dict[str, Any]]:
     """Cria N linhas futuras (uma por mes_ref) e devolve a prévia.
 
     ALTO RISCO: grava em vários meses de uma vez. `dry_run=True` é o padrão
     e devolve apenas a prévia; só grava com dry_run=False explícito.
+
+    `valor_ultima_parcela` existe para a divisão fechar em centavos: quando
+    o total não divide redondo, a última linha sai com o resto. Ele só é
+    enviado quando difere de `valor_parcela` — parcelamento redondo
+    continua com exatamente os mesmos parâmetros de sempre.
     """
     _validar_mes_ref(mes_inicial)
     if n_parcelas < 1:
@@ -423,20 +429,26 @@ def adicionar_parcelamento(
     if numero is None or numero <= 0:
         raise ValueError(f"valor_parcela inválido: {valor_parcela!r}")
 
-    return _linhas_de_previa(
-        api.chamar(
-            "adicionar_parcelamento",
-            {
-                "descricao": descricao,
-                "valor_parcela": round(numero, 2),
-                "n_parcelas": int(n_parcelas),
-                "mes_inicial": mes_inicial,
-                "categoria": categoria,
-                "dia_do_mes": int(dia_do_mes),
-                "dry_run": bool(dry_run),
-            },
-        )
-    )
+    params: dict[str, Any] = {
+        "descricao": descricao,
+        "valor_parcela": round(numero, 2),
+        "n_parcelas": int(n_parcelas),
+        "mes_inicial": mes_inicial,
+        "categoria": categoria,
+        "dia_do_mes": int(dia_do_mes),
+        "dry_run": bool(dry_run),
+    }
+
+    if valor_ultima_parcela is not None:
+        ultima = _para_numero(valor_ultima_parcela)
+        if ultima is None or ultima <= 0:
+            raise ValueError(
+                f"valor_ultima_parcela inválido: {valor_ultima_parcela!r}"
+            )
+        if round(ultima, 2) != round(numero, 2):
+            params["valor_ultima_parcela"] = round(ultima, 2)
+
+    return _linhas_de_previa(api.chamar("adicionar_parcelamento", params))
 
 
 def gerar_mes(mes_ref: str, dry_run: bool = True) -> list[dict[str, Any]]:

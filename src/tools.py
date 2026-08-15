@@ -795,14 +795,47 @@ def corrigir_lancamento(
 # --------------------------------------------------------------------------
 # tools de escrita — alto risco (sempre em par simular -> confirmar)
 # --------------------------------------------------------------------------
+# `valor_total` e `valor_parcela` são excludentes de propósito. Pedir só a
+# parcela obrigava o modelo a dividir quando o usuário falava o total, e
+# dividir para preencher campo obrigatório não parece cálculo para ele:
+# parece preencher formulário. Com os dois campos, a divisão sai do alcance
+# dele do mesmo jeito que `dry_run` saiu — não está no schema.
+_ERRO_VALOR_DO_PARCELAMENTO: Final[dict[str, Any]] = {
+    "gravado": False,
+    "erro": "informe valor_total OU valor_parcela, não os dois",
+    "sugestao": (
+        "Passe `valor_total` quando o usuário disser o preço da compra e "
+        "`valor_parcela` quando ele disser quanto cai por mês. Exatamente "
+        "um dos dois, e nunca um calculado a partir do outro."
+    ),
+}
+
+
+def _pedido_incompleto(valor_total: float | None, valor_parcela: float | None) -> bool:
+    """Os dois valores juntos, ou nenhum, não dizem que parcelamento é este."""
+    return (valor_total is None) == (valor_parcela is None)
+
+
+def _campos_de_valor(numeros: dict[str, Any]) -> dict[str, Any]:
+    """Os dois valores que o modelo mostra, mais a última parcela se diferir."""
+    campos = {
+        "valor_total": numeros["valor_total"],
+        "valor_parcela": numeros["valor_parcela"],
+    }
+    if numeros["ajuste_de_centavos"]:
+        campos["valor_ultima_parcela"] = numeros["valor_ultima_parcela"]
+    return campos
+
+
 @tool
 @_protegido
 def simular_parcelamento(
     descricao: str,
-    valor_parcela: float,
     n_parcelas: int,
     mes_inicial: str,
     categoria: str,
+    valor_total: float | None = None,
+    valor_parcela: float | None = None,
     dia_do_mes: int | None = None,
 ) -> dict[str, Any]:
     """Mostra a prévia de um parcelamento SEM gravar nada.
@@ -811,32 +844,52 @@ def simular_parcelamento(
     as linhas que seriam criadas — uma por mês — para você mostrar ao usuário
     e pedir confirmação.
 
-    Use sempre que o usuário for parcelar algo. `valor_parcela` é o valor de
-    CADA parcela (em `simular_compra`, ao contrário, o valor é o total).
+    Use sempre que o usuário for parcelar algo. Se ele informar o valor
+    TOTAL da compra, passe `valor_total` e NÃO divida — a divisão é feita
+    aqui. Se ele informar o valor de CADA parcela, passe `valor_parcela`.
+    Nunca calcule um a partir do outro. Preencha exatamente UM dos dois: os
+    dois juntos, ou nenhum, é erro e nada é gravado.
+
+    A resposta traz sempre `valor_total` e `valor_parcela` e, quando a
+    divisão não fecha redonda, `valor_ultima_parcela` — a última parcela
+    absorve os centavos que sobram. Mostre esses números como vieram.
+
     `mes_inicial` é AAAA-MM. `dia_do_mes` é o dia do vencimento: informe
     quando o usuário disser; sem ele, um parcelamento que começa neste mês
     vence no dia de hoje e um que começa mais adiante vence no dia 1.
 
     Depois de mostrar a prévia e o usuário confirmar, e só então, chame
     `confirmar_parcelamento` com exatamente os mesmos argumentos — inclusive
-    o `dia_do_mes` que veio nesta resposta. Se ele não confirmar, não chame
-    nada.
+    o `dia_do_mes` que veio nesta resposta e o mesmo lado do valor que você
+    usou aqui. Se ele não confirmar, não chame nada.
     """
+    if _pedido_incompleto(valor_total, valor_parcela):
+        return _json(dict(_ERRO_VALOR_DO_PARCELAMENTO))
+
+    numeros = financas.numeros_do_parcelamento(
+        n_parcelas=n_parcelas,
+        valor_total=valor_total,
+        valor_parcela=valor_parcela,
+    )
     dia = dia_do_mes if dia_do_mes is not None else _dia_padrao(mes_inicial)
     previa = sheets.adicionar_parcelamento(
         descricao=descricao,
-        valor_parcela=valor_parcela,
+        valor_parcela=numeros["valor_parcela"],
+        valor_ultima_parcela=numeros["valor_ultima_parcela"],
         n_parcelas=n_parcelas,
         mes_inicial=mes_inicial,
         categoria=categoria,
         dia_do_mes=dia,
         dry_run=True,
     )
-    # Só uma prévia que deu certo libera a confirmação correspondente.
+    # Só uma prévia que deu certo libera a confirmação correspondente. A
+    # assinatura guarda os argumentos COMO VIERAM: simular com valor_total e
+    # confirmar com a parcela equivalente é outro pedido, e simula de novo.
     _registrar_simulacao(
         _assinatura(
             "parcelamento",
             descricao=descricao,
+            valor_total=valor_total,
             valor_parcela=valor_parcela,
             n_parcelas=n_parcelas,
             mes_inicial=mes_inicial,
@@ -849,7 +902,7 @@ def simular_parcelamento(
             "gravado": False,
             "dry_run": True,
             "descricao": descricao,
-            "valor_parcela": valor_parcela,
+            **_campos_de_valor(numeros),
             "n_parcelas": n_parcelas,
             "mes_inicial": mes_inicial,
             "dia_do_mes": dia,
@@ -862,32 +915,43 @@ def simular_parcelamento(
 @_protegido
 def confirmar_parcelamento(
     descricao: str,
-    valor_parcela: float,
     n_parcelas: int,
     mes_inicial: str,
     categoria: str,
+    valor_total: float | None = None,
+    valor_parcela: float | None = None,
     dia_do_mes: int | None = None,
 ) -> dict[str, Any]:
     """GRAVA o parcelamento: cria uma linha em cada um dos meses futuros.
 
     ALTO RISCO: escreve em vários meses de uma vez e não se desfaz sozinho.
 
+    Se o usuário informar o valor TOTAL da compra, passe `valor_total` e NÃO
+    divida — a divisão é feita aqui. Se ele informar o valor de CADA
+    parcela, passe `valor_parcela`. Nunca calcule um a partir do outro.
+    Preencha exatamente UM dos dois.
+
     Só pode ser chamada depois que `simular_parcelamento` foi executada, a
     prévia foi MOSTRADA ao usuário e ele CONFIRMOU explicitamente. Nunca
     chame esta tool direto, nunca na mesma resposta em que a prévia foi
     exibida, e nunca com argumentos diferentes dos que foram simulados — se
     algum valor mudou, simule de novo antes. Repasse o `dia_do_mes` que veio
-    na prévia, para gravar exatamente o que o usuário confirmou.
+    na prévia e o MESMO lado do valor que você simulou: trocar `valor_total`
+    pela parcela que ela gerou conta como argumento diferente.
 
     Isto não é só orientação: sem uma simulação recente e idêntica nesta
     conversa, a tool RECUSA e devolve `{"gravado": false, "erro":
     "sem_simulacao"}` sem escrever nada.
     """
+    if _pedido_incompleto(valor_total, valor_parcela):
+        return _json(dict(_ERRO_VALOR_DO_PARCELAMENTO))
+
     dia = dia_do_mes if dia_do_mes is not None else _dia_padrao(mes_inicial)
     if not _consumir_simulacao(
         _assinatura(
             "parcelamento",
             descricao=descricao,
+            valor_total=valor_total,
             valor_parcela=valor_parcela,
             n_parcelas=n_parcelas,
             mes_inicial=mes_inicial,
@@ -897,9 +961,15 @@ def confirmar_parcelamento(
     ):
         return _json(_erro_sem_simulacao("simular_parcelamento"))
 
+    numeros = financas.numeros_do_parcelamento(
+        n_parcelas=n_parcelas,
+        valor_total=valor_total,
+        valor_parcela=valor_parcela,
+    )
     linhas = sheets.adicionar_parcelamento(
         descricao=descricao,
-        valor_parcela=valor_parcela,
+        valor_parcela=numeros["valor_parcela"],
+        valor_ultima_parcela=numeros["valor_ultima_parcela"],
         n_parcelas=n_parcelas,
         mes_inicial=mes_inicial,
         categoria=categoria,
@@ -911,7 +981,7 @@ def confirmar_parcelamento(
             "gravado": True,
             "dry_run": False,
             "descricao": descricao,
-            "valor_parcela": valor_parcela,
+            **_campos_de_valor(numeros),
             "n_parcelas": n_parcelas,
             "mes_inicial": mes_inicial,
             "dia_do_mes": dia,

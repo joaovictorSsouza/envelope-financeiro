@@ -399,6 +399,57 @@ def test_adicionar_parcelamento_so_grava_com_flag_explicita(
     assert chamadas[0][1]["dry_run"] is False
 
 
+def test_adicionar_parcelamento_manda_a_ultima_parcela_quando_difere(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Divisão que não fecha redonda: a última linha vai com o resto."""
+    chamadas = _mock(monkeypatch, {"adicionar_parcelamento": []})
+    sheets.adicionar_parcelamento(
+        descricao="geladeira",
+        valor_parcela=171.43,
+        valor_ultima_parcela=171.42,
+        n_parcelas=7,
+        mes_inicial="2026-08",
+        categoria="casa",
+        dia_do_mes=10,
+    )
+    assert chamadas[0][1]["valor_ultima_parcela"] == 171.42
+
+
+def test_adicionar_parcelamento_omite_a_ultima_parcela_quando_igual(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Parcelamento redondo vai para a planilha com os parâmetros de sempre."""
+    chamadas = _mock(monkeypatch, {"adicionar_parcelamento": []})
+    sheets.adicionar_parcelamento(
+        descricao="fone",
+        valor_parcela=200.0,
+        valor_ultima_parcela=200.0,
+        n_parcelas=6,
+        mes_inicial="2026-08",
+        categoria="compras",
+        dia_do_mes=10,
+    )
+    assert "valor_ultima_parcela" not in chamadas[0][1]
+
+
+def test_adicionar_parcelamento_recusa_ultima_parcela_invalida(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    chamadas = _mock(monkeypatch, {"adicionar_parcelamento": []})
+    with pytest.raises(ValueError):
+        sheets.adicionar_parcelamento(
+            descricao="fone",
+            valor_parcela=200.0,
+            valor_ultima_parcela=0.0,
+            n_parcelas=6,
+            mes_inicial="2026-08",
+            categoria="compras",
+            dia_do_mes=10,
+        )
+    assert chamadas == []
+
+
 def test_gerar_mes_dry_run_por_padrao(monkeypatch: pytest.MonkeyPatch) -> None:
     chamadas = _mock(
         monkeypatch, {"gerar_mes": [{"descricao": "gympass", "valor": 150.0}]}

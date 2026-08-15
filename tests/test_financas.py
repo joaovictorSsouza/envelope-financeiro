@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import date
+from decimal import Decimal
 from typing import Any
 
 import pandas as pd
@@ -1179,3 +1180,122 @@ def test_tipos_do_alvo_sem_achar_devolve_lista_vazia(df_agosto: pd.DataFrame) ->
     """Lista vazia é "não achei aqui", não "não existe" — quem decide é a planilha."""
     assert financas.tipos_do_alvo(df_agosto, descricao="internet") == []
     assert financas.tipos_do_alvo(df_agosto) == []
+
+
+# --------------------------------------------------------------------------
+# dividir_parcelas e numeros_do_parcelamento
+# --------------------------------------------------------------------------
+def _soma(parcelas: list[Decimal]) -> Decimal:
+    return sum(parcelas, Decimal("0"))
+
+
+def test_dividir_parcelas_redondo() -> None:
+    """O caso comum: 1.200 em 6x são seis de 200,00 e nenhum resto."""
+    parcelas = financas.dividir_parcelas(1200, 6)
+
+    assert parcelas == [Decimal("200.00")] * 6
+    assert _soma(parcelas) == Decimal("1200.00")
+
+
+def test_dividir_parcelas_com_resto_vai_para_a_ultima() -> None:
+    """1.200 em 7x: seis de 171,43 e uma de 171,42, somando exatamente 1.200."""
+    parcelas = financas.dividir_parcelas(1200, 7)
+
+    assert parcelas[:6] == [Decimal("171.43")] * 6
+    assert parcelas[-1] == Decimal("171.42")
+    assert _soma(parcelas) == Decimal("1200.00")
+
+
+def test_dividir_parcelas_soma_exata_em_divisao_infinita() -> None:
+    parcelas = financas.dividir_parcelas(1799, 7)
+
+    assert len(parcelas) == 7
+    assert _soma(parcelas) == Decimal("1799.00")
+
+
+def test_dividir_parcelas_centavo_a_mais_fica_na_ultima() -> None:
+    """100 em 3x: o centavo que sobra vai no FIM, não no começo."""
+    parcelas = financas.dividir_parcelas(100, 3)
+
+    assert parcelas == [Decimal("33.33"), Decimal("33.33"), Decimal("33.34")]
+    assert _soma(parcelas) == Decimal("100.00")
+
+
+@pytest.mark.parametrize(
+    ("valor_total", "n_parcelas"),
+    [(1200, 6), (1200, 7), (1799, 7), (100, 3), (0.05, 5), (99.99, 4), (2500, 12)],
+)
+def test_dividir_parcelas_sempre_fecha_a_soma(
+    valor_total: float, n_parcelas: int
+) -> None:
+    """A garantia que interessa: a soma das parcelas é o total, sempre."""
+    parcelas = financas.dividir_parcelas(valor_total, n_parcelas)
+
+    assert len(parcelas) == n_parcelas
+    assert _soma(parcelas) == Decimal(str(valor_total)).quantize(Decimal("0.01"))
+
+
+def test_dividir_parcelas_a_vista() -> None:
+    assert financas.dividir_parcelas(1200, 1) == [Decimal("1200.00")]
+
+
+def test_dividir_parcelas_argumento_invalido() -> None:
+    with pytest.raises(ValueError):
+        financas.dividir_parcelas(1200, 0)
+    with pytest.raises(ValueError):
+        financas.dividir_parcelas(0, 6)
+    with pytest.raises(ValueError):
+        financas.dividir_parcelas(-1200, 6)
+    # Pequeno demais para caber um centavo em cada parcela.
+    with pytest.raises(ValueError):
+        financas.dividir_parcelas(0.02, 3)
+
+
+def test_numeros_do_parcelamento_pelo_total() -> None:
+    numeros = financas.numeros_do_parcelamento(n_parcelas=6, valor_total=1200)
+
+    assert numeros == {
+        "n_parcelas": 6,
+        "valor_total": 1200.0,
+        "valor_parcela": 200.0,
+        "valor_ultima_parcela": 200.0,
+        "ajuste_de_centavos": False,
+    }
+
+
+def test_numeros_do_parcelamento_pelo_total_com_ajuste() -> None:
+    numeros = financas.numeros_do_parcelamento(n_parcelas=7, valor_total=1200)
+
+    assert numeros["valor_total"] == 1200.0
+    assert numeros["valor_parcela"] == 171.43
+    assert numeros["valor_ultima_parcela"] == 171.42
+    assert numeros["ajuste_de_centavos"] is True
+
+
+def test_numeros_do_parcelamento_pela_parcela() -> None:
+    """O outro lado do pedido: o total é a multiplicação, feita aqui."""
+    numeros = financas.numeros_do_parcelamento(n_parcelas=6, valor_parcela=200)
+
+    assert numeros == {
+        "n_parcelas": 6,
+        "valor_total": 1200.0,
+        "valor_parcela": 200.0,
+        "valor_ultima_parcela": 200.0,
+        "ajuste_de_centavos": False,
+    }
+
+
+def test_numeros_do_parcelamento_exige_exatamente_um_lado() -> None:
+    with pytest.raises(ValueError, match="valor_total OU valor_parcela"):
+        financas.numeros_do_parcelamento(
+            n_parcelas=6, valor_total=1200, valor_parcela=200
+        )
+    with pytest.raises(ValueError, match="valor_total OU valor_parcela"):
+        financas.numeros_do_parcelamento(n_parcelas=6)
+
+
+def test_numeros_do_parcelamento_recusa_parcela_invalida() -> None:
+    with pytest.raises(ValueError):
+        financas.numeros_do_parcelamento(n_parcelas=6, valor_parcela=0)
+    with pytest.raises(ValueError):
+        financas.numeros_do_parcelamento(n_parcelas=0, valor_parcela=200)

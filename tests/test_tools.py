@@ -517,6 +517,158 @@ def test_simular_parcelamento_nao_grava(
     assert sheets_mockado["gerar_mes"] == []
 
 
+# --------------------------------------------------------------------------
+# valor_total x valor_parcela: quem divide é a tool, nunca o modelo
+# --------------------------------------------------------------------------
+def test_parcelamento_pelo_total_divide_aqui(
+    sheets_mockado: dict[str, list[Any]],
+) -> None:
+    """"parcelei 1200 em 6x": o modelo manda 1200, a tool devolve os 200."""
+    resultado = tools.simular_parcelamento.invoke(
+        {
+            "descricao": "geladeira",
+            "valor_total": 1200.0,
+            "n_parcelas": 6,
+            "mes_inicial": MES_SEGUINTE,
+            "categoria": "casa",
+        }
+    )
+
+    assert resultado["valor_total"] == 1200.00
+    assert resultado["valor_parcela"] == 200.00
+    # Divisão redonda não tem última parcela diferente para mostrar.
+    assert "valor_ultima_parcela" not in resultado
+    assert sheets_mockado["adicionar_parcelamento"][0]["valor_parcela"] == 200.00
+
+
+def test_parcelamento_pelo_total_com_centavos_mostra_a_ultima(
+    sheets_mockado: dict[str, list[Any]],
+) -> None:
+    """1.200 em 7x não fecha redondo: a última parcela vem em campo próprio."""
+    resultado = tools.simular_parcelamento.invoke(
+        {
+            "descricao": "geladeira",
+            "valor_total": 1200.0,
+            "n_parcelas": 7,
+            "mes_inicial": MES_SEGUINTE,
+            "categoria": "casa",
+        }
+    )
+
+    assert resultado["valor_total"] == 1200.00
+    assert resultado["valor_parcela"] == 171.43
+    assert resultado["valor_ultima_parcela"] == 171.42
+    # E o ajuste chega na planilha, senão a soma gravada não fecharia.
+    chamada = sheets_mockado["adicionar_parcelamento"][0]
+    assert chamada["valor_parcela"] == 171.43
+    assert chamada["valor_ultima_parcela"] == 171.42
+
+
+def test_parcelamento_pela_parcela_devolve_os_dois_valores(
+    sheets_mockado: dict[str, list[Any]],
+) -> None:
+    """"seis parcelas de 300": o total é calculado aqui, não pelo modelo."""
+    resultado = tools.simular_parcelamento.invoke(
+        {
+            "descricao": "geladeira",
+            "valor_parcela": 300.0,
+            "n_parcelas": 6,
+            "mes_inicial": MES_SEGUINTE,
+            "categoria": "casa",
+        }
+    )
+
+    assert resultado["valor_parcela"] == 300.00
+    assert resultado["valor_total"] == 1800.00
+    assert "valor_ultima_parcela" not in resultado
+
+
+@pytest.mark.parametrize(
+    "valores",
+    [
+        {"valor_total": 1200.0, "valor_parcela": 200.0},
+        {},
+    ],
+    ids=["os dois juntos", "nenhum dos dois"],
+)
+def test_parcelamento_exige_exatamente_um_dos_valores(
+    sheets_mockado: dict[str, list[Any]], valores: dict[str, Any]
+) -> None:
+    """Dois valores ou nenhum não descrevem um parcelamento: nada é gravado."""
+    pedido = {
+        "descricao": "geladeira",
+        "n_parcelas": 6,
+        "mes_inicial": MES_SEGUINTE,
+        "categoria": "casa",
+        **valores,
+    }
+
+    previa = tools.simular_parcelamento.invoke(dict(pedido))
+    assert previa["gravado"] is False
+    assert previa["erro"] == "informe valor_total OU valor_parcela, não os dois"
+
+    gravacao = tools.confirmar_parcelamento.invoke(dict(pedido))
+    assert gravacao["gravado"] is False
+    assert gravacao["erro"] == "informe valor_total OU valor_parcela, não os dois"
+
+    # Nem a prévia chegou a rodar: nenhuma chamada, nem com dry_run.
+    assert sheets_mockado["adicionar_parcelamento"] == []
+
+
+def test_confirmar_com_a_parcela_equivalente_ao_total_simulado_recusa(
+    sheets_mockado: dict[str, list[Any]],
+) -> None:
+    """1200 em 6x e 6x de 200 dão no mesmo, mas não são o mesmo argumento.
+
+    O guard compara o que o modelo mandou, não o resultado da conta. Trocar
+    de lado depois da prévia é pedido novo, e pede simulação nova.
+    """
+    base = {
+        "descricao": "geladeira",
+        "n_parcelas": 6,
+        "mes_inicial": MES_SEGUINTE,
+        "categoria": "casa",
+    }
+    tools.simular_parcelamento.invoke({**base, "valor_total": 1200.0})
+    resultado = tools.confirmar_parcelamento.invoke({**base, "valor_parcela": 200.0})
+
+    assert resultado["gravado"] is False
+    assert resultado["erro"] == "sem_simulacao"
+    assert [c["dry_run"] for c in sheets_mockado["adicionar_parcelamento"]] == [True]
+
+
+def test_ciclo_completo_pelo_valor_total_grava(
+    sheets_mockado: dict[str, list[Any]],
+) -> None:
+    """Simular e confirmar pelo mesmo lado do valor: aí sim grava."""
+    pedido = {
+        "descricao": "geladeira",
+        "valor_total": 1200.0,
+        "n_parcelas": 7,
+        "mes_inicial": MES_SEGUINTE,
+        "categoria": "casa",
+    }
+    tools.simular_parcelamento.invoke(dict(pedido))
+    resultado = tools.confirmar_parcelamento.invoke(dict(pedido))
+
+    assert resultado["gravado"] is True
+    assert resultado["valor_parcela"] == 171.43
+    assert resultado["valor_ultima_parcela"] == 171.42
+    assert [c["dry_run"] for c in sheets_mockado["adicionar_parcelamento"]] == [
+        True,
+        False,
+    ]
+
+
+def test_docstring_manda_o_modelo_nao_dividir() -> None:
+    """A regra vive na descrição das duas tools — é ela que o modelo lê."""
+    for tool_do_par in (tools.simular_parcelamento, tools.confirmar_parcelamento):
+        # O docstring quebra linha; o que importa é a frase, não a coluna.
+        descricao = " ".join(tool_do_par.description.lower().split())
+        assert "não divida" in descricao
+        assert "nunca calcule um a partir do outro" in descricao
+
+
 def test_dia_do_mes_padrao_no_mes_corrente_e_hoje() -> None:
     """Parcelamento que começa neste mês vence no dia da compra."""
     hoje = date(2026, 8, 13)
@@ -767,6 +919,7 @@ def test_guard_nao_mexe_no_schema_exposto_ao_modelo() -> None:
     campos = set(tools.confirmar_parcelamento.args_schema.model_fields)
     assert campos == {
         "descricao",
+        "valor_total",
         "valor_parcela",
         "n_parcelas",
         "mes_inicial",

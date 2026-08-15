@@ -112,6 +112,87 @@ def fase_do_mes(hoje: date | None = None) -> str:
 
 
 # --------------------------------------------------------------------------
+# divisão de parcelas
+# --------------------------------------------------------------------------
+# Dividir um total pelo número de parcelas é conta, e conta não sai de LLM.
+# Modelo nenhum resiste a "parcelei 1200 em 6x": ele divide de cabeça e
+# entrega 200 como se fosse dado, não resultado. Por isso a tool recebe o
+# total e a divisão acontece aqui, onde é testada.
+def dividir_parcelas(valor_total: float, n_parcelas: int) -> list[Decimal]:
+    """Divide um total em N parcelas que somam EXATAMENTE o total.
+
+    A parcela é o total dividido por N, arredondado para centavos
+    (ROUND_HALF_UP). O que sobra da divisão — para mais ou para menos — cai
+    todo na ÚLTIMA parcela, que é quem fecha a conta: 1.200 em 7x vira seis
+    de 171,43 e uma de 171,42; 100 em 3x vira duas de 33,33 e uma de 33,34.
+
+    O centavo vai no fim, e não no começo, porque é assim que o
+    parcelamento fica legível: o usuário vê o valor que vai pagar quase
+    todo mês e uma sobra no último, em vez de uma primeira parcela
+    diferente de todas as outras.
+
+    O total é arredondado para centavos antes de dividir — a soma das
+    parcelas fecha com o total já em centavos, não com a fração original.
+    """
+    if n_parcelas < 1:
+        raise ValueError("n_parcelas deve ser >= 1")
+
+    total = _d(valor_total).quantize(CENTAVO, rounding=ROUND_HALF_UP)
+    if total <= 0:
+        raise ValueError(f"valor_total deve ser > 0: {valor_total!r}")
+
+    parcela = (total / n_parcelas).quantize(CENTAVO, rounding=ROUND_HALF_UP)
+    ultima = (total - parcela * (n_parcelas - 1)).quantize(
+        CENTAVO, rounding=ROUND_HALF_UP
+    )
+    if parcela <= 0 or ultima <= 0:
+        raise ValueError(
+            f"valor_total {valor_total!r} é pequeno demais para "
+            f"{n_parcelas} parcelas"
+        )
+
+    return [parcela] * (n_parcelas - 1) + [ultima]
+
+
+def numeros_do_parcelamento(
+    n_parcelas: int,
+    valor_total: float | None = None,
+    valor_parcela: float | None = None,
+) -> dict[str, Any]:
+    """Os números de um parcelamento a partir de UM dos dois lados do pedido.
+
+    Informe `valor_total` (o preço da compra inteira) OU `valor_parcela` (o
+    valor de cada mês) — nunca os dois, nunca nenhum. É esta escolha que
+    tira a divisão do alcance do modelo: com o total, quem divide é
+    `dividir_parcelas`; com a parcela, o total é a multiplicação, feita
+    aqui.
+
+    Devolve sempre os dois valores, mais `valor_ultima_parcela` e
+    `ajuste_de_centavos`, que diz se a última parcela difere das demais.
+    """
+    if (valor_total is None) == (valor_parcela is None):
+        raise ValueError("informe valor_total OU valor_parcela, não os dois")
+
+    if valor_total is not None:
+        parcelas = dividir_parcelas(valor_total, n_parcelas)
+    else:
+        if n_parcelas < 1:
+            raise ValueError("n_parcelas deve ser >= 1")
+        parcela = _d(valor_parcela).quantize(CENTAVO, rounding=ROUND_HALF_UP)
+        if parcela <= 0:
+            raise ValueError(f"valor_parcela deve ser > 0: {valor_parcela!r}")
+        parcelas = [parcela] * n_parcelas
+
+    return {
+        "n_parcelas": int(n_parcelas),
+        "valor_total": _r2(_somar(parcelas)),
+        "valor_parcela": _r2(parcelas[0]),
+        "valor_ultima_parcela": _r2(parcelas[-1]),
+        "ajuste_de_centavos": parcelas[-1] != parcelas[0],
+    }
+
+
+# --------------------------------------------------------------------------
 # recortes do DataFrame
 # --------------------------------------------------------------------------
 def _do_mes(df: pd.DataFrame, mes_ref: str) -> pd.DataFrame:

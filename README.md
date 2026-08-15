@@ -63,6 +63,14 @@ Exceções: `ApiError` (base), `ErroDeRede` e `RespostaInvalida`.
 As duas funções de alto risco têm `dry_run=True` por padrão, igual ao servidor:
 só gravam com `dry_run=False` explícito, e devolvem a prévia caso contrário.
 
+`adicionar_parcelamento` aceita um `valor_ultima_parcela` opcional, para a
+divisão fechar em centavos quando o total não divide redondo (1.200 em 7x são
+seis de 171,43 e uma de 171,42). Ele só vai no POST quando difere de
+`valor_parcela` — parcelamento redondo continua com exatamente os mesmos
+parâmetros de antes. **O Web App precisa honrar esse parâmetro**: recebido,
+ele vale para a última das N linhas; ignorado, o parcelamento desigual é
+gravado uniforme e a soma erra por centavos.
+
 As duas de atualização identificam a linha por `id` ou por `descricao`
 (opcionalmente com `mes_ref`). Quando o filtro casa com mais de um lançamento,
 elas levantam `AmbiguidadeError` — subclasse de `ApiError` — com a lista em
@@ -90,6 +98,8 @@ Vocabulário das regras:
 | `compromissos_futuros(df, mes_ref, n_meses=12)` | mês a mês do que já está lançado (janela inclui `mes_ref`), com `sintetizado` por mês |
 | `tipos_do_alvo(df, id, descricao, mes_ref)` | tipos dos lançamentos que casam com o filtro (entrada/saida) |
 | `parcelas_em_aberto(df, mes_ref)` | parcelamentos por `grupo_id`, com quanto falta |
+| `dividir_parcelas(valor_total, n_parcelas)` | lista de `Decimal` que soma EXATAMENTE o total |
+| `numeros_do_parcelamento(n_parcelas, valor_total=None, valor_parcela=None)` | os dois valores a partir de um dos dois lados do pedido |
 | `projetar_janela(df, recorrentes, mes_inicial, n_meses=12)` | df ampliado com os meses ainda não gerados |
 | `capacidade_de_compra(df, config, valor, n_parcelas, mes_ref=None, recorrentes=None)` | veredito em 12 meses |
 | `planejamento_status(df, recorrentes, mes_ref, config=None)` | o que já existe e o que falta no mês |
@@ -106,6 +116,14 @@ do tamanho real do mês.
 
 Todo dinheiro é somado em `Decimal` e arredondado para 2 casas com
 `ROUND_HALF_UP` antes de virar `float`.
+
+`dividir_parcelas` é a divisão que o modelo não faz: a parcela é o total
+dividido por N arredondado para centavos, e o resto — para mais ou para menos —
+cai todo na **última** parcela, que fecha a conta. O centavo vai no fim, e não
+no começo, porque assim o usuário vê o valor que paga quase todo mês e uma
+sobra no último, em vez de uma primeira parcela diferente de todas as outras.
+1.200 em 6x são seis de 200,00; em 7x, seis de 171,43 e uma de 171,42; 100 em
+3x, duas de 33,33 e uma de 33,34.
 
 ## O envelope do variável (sem contagem dupla)
 
@@ -219,6 +237,28 @@ garante. Sem `dia_do_mes`, um parcelamento que começa no mês
 corrente vence no dia de hoje; nos demais meses, no dia 1. O dia escolhido volta
 na prévia, para a confirmação gravar exatamente o que o usuário viu.
 
+### `valor_total` e `valor_parcela`: a divisão fora do alcance do modelo
+
+As duas tools de parcelamento recebem `valor_total` **ou** `valor_parcela`,
+nunca os dois. Os dois juntos, ou nenhum, devolvem
+`{"gravado": false, "erro": "informe valor_total OU valor_parcela, não os dois"}`
+sem escrever nada.
+
+Um campo só de parcela obrigava o modelo a dividir quando o usuário dizia o
+total, e todo modelo testado dividia: em "parcelei uma geladeira de 1.200 em
+6x" eles mandavam `valor_parcela=200`. Isso é escrita com número calculado por
+LLM — exatamente o que `financas.py` existe para impedir. Reforçar o prompt não
+resolve, porque dividir para preencher um campo obrigatório não parece cálculo
+para o modelo: parece preencher formulário. Com os dois campos, a divisão sai
+do alcance dele do mesmo jeito que `dry_run` saiu — não está no schema.
+
+A resposta traz sempre `valor_total` e `valor_parcela` e, quando a divisão não
+fecha redonda, `valor_ultima_parcela` num campo próprio, para o modelo mostrar.
+
+O guard compara os argumentos **como o modelo mandou**, não o resultado da
+conta: simular com `valor_total=1200` e confirmar com `valor_parcela=200` é
+argumento diferente e recusa, mesmo dando no mesmo parcelamento.
+
 `registrar_gasto` decide o status pelo `ja_gastei`: `True` (padrão) grava
 `pago` — o dinheiro já saiu, é gasto realizado; `False` grava `previsto` — o
 gasto ainda vai acontecer e está reservado dentro do envelope. Os dois consomem
@@ -299,6 +339,7 @@ correspondente **só grava se achar essa marca**. Sem ela, devolve
 |---|---|
 | `confirmar_*` sem simulação | recusa |
 | argumento diferente do simulado (3x → 2x, outro valor, outro mês) | recusa |
+| simulado por `valor_total`, confirmado pela parcela equivalente | recusa |
 | simulação de mais de 30 min (`JANELA_SIMULACAO_S`) | recusa |
 | simulação feita em outra thread | recusa |
 | simulação que falhou (rede, API) | recusa |
@@ -416,3 +457,57 @@ recalcula nada por conta própria; o bot só transporta mensagens.
 Ainda não existe ferramenta para registrar uma **entrada** nova, para **apagar**
 um lançamento nem para **listar as categorias** válidas. O prompt declara os
 três como limites, em vez de deixar o modelo improvisar.
+
+## Próximos passos
+
+### Análise financeira (prioridade)
+
+Hoje o agente responde perguntas pontuais sobre um mês: quanto sobra, quanto
+cabe, o que está lançado, quanto está comprometido. Falta a camada que enxerga
+padrão ao longo do tempo.
+
+O que se quer:
+
+- **Tendência por categoria** — "meu gasto com alimentação está subindo?".
+  Hoje só existe `comparar_meses`, que compara dois de cada vez. Falta série
+  histórica.
+- **Detecção de anomalia** — gasto que destoa da média da própria categoria.
+  É o tipo de coisa que o usuário não pensa em perguntar; o agente é que
+  deveria notar.
+- **Maiores ralos** — as categorias que mais consomem renda numa janela de
+  vários meses, não só no mês corrente.
+- **Evolução do poder de compra** — quando uma parcela termina, o envelope
+  aumenta. Os dados já respondem "a partir de quando eu tenho mais folga", mas
+  nenhuma ferramenta faz essa pergunta.
+- **Aderência ao plano** — o usuário planeja o mês seguinte; o sistema pode
+  medir o quanto o planejado bateu com o realizado. "Você costuma subestimar
+  mercado em 20%" é provavelmente a informação mais útil que este projeto pode
+  gerar.
+
+Decisões em aberto:
+
+- O agente traz análise por iniciativa própria ou só quando perguntado? O
+  `sistema.md` hoje é deliberadamente contido.
+- Análise vira relatório mensal automático (mensagem no dia 1º com o
+  fechamento do mês anterior) ou fica sob demanda?
+- Onde fica o limite do tom. Análise escorrega fácil para julgamento, e o
+  `sistema.md` proíbe moralizar. "Você gastou 40% mais em lazer" é fato;
+  "você deveria maneirar" não é.
+
+Dependência: análise de padrão precisa de histórico. Com dois meses de dado,
+qualquer tendência é ruído. A partir de quatro ou cinco meses de lançamento
+consistente, as respostas começam a valer.
+
+### Outros itens
+
+- **Prévia de `simular_geracao_mes`** — hoje lista só as linhas que serão
+  criadas, o que dá a impressão de que aquilo é o mês inteiro. Deveria mostrar
+  também o que já está lançado no mês (parcelas) e o envelope resultante.
+- **Entrada de dinheiro** — não existe ferramenta para registrar entrada; hoje
+  só saída. Renda extra e freela precisam ser lançados direto na planilha.
+- **Transcrição de áudio** — registrar gasto por mensagem de voz no Telegram,
+  para lançar sem digitar.
+- **Deploy** — o bot roda local por polling. Ver notas de fuso horário antes
+  de subir: `financas.py` usa a data do sistema para decidir mês de
+  acompanhamento e de planejamento, e servidor em UTC vira o mês algumas horas
+  antes.
