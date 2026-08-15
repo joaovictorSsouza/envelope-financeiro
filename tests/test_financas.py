@@ -560,6 +560,132 @@ def test_gastos_por_categoria_mes_vazio(df_agosto: pd.DataFrame) -> None:
 
 
 # --------------------------------------------------------------------------
+# listar_lancamentos
+# --------------------------------------------------------------------------
+def test_listar_lancamentos_devolve_as_linhas_e_os_subtotais(
+    df_agosto: pd.DataFrame,
+) -> None:
+    """Todas as linhas do mês, fixas antes das variadas e por valor decrescente."""
+    resultado = financas.listar_lancamentos(df_agosto, "2026-08")
+    linhas = resultado["lancamentos"]
+
+    assert list(linhas["descricao"]) == [
+        "salário",  # entrada também é natureza fixa
+        "faculdade",
+        "hyrox",
+        "gympass",
+        "relógio",
+        "mercado",  # única variada, vai para o fim
+    ]
+    assert list(linhas["valor"]) == [2500.00, 350.00, 160.00, 150.00, 133.00, 160.00]
+    assert list(linhas.columns) == financas.COLUNAS_LISTAGEM
+
+    assert resultado["mes_ref"] == "2026-08"
+    assert resultado["total_entradas"] == 2500.00
+    assert resultado["total_fixas"] == 793.00  # 350 + 160 + 150 + 133
+    assert resultado["total_parcelas"] == 293.00  # hyrox 160 + relógio 133
+    assert resultado["total_variadas"] == 160.00
+
+
+def test_listar_lancamentos_traz_a_numeracao_so_de_quem_e_parcela(
+    df_agosto: pd.DataFrame,
+) -> None:
+    linhas = financas.listar_lancamentos(df_agosto, "2026-08")["lancamentos"]
+    por_descricao = linhas.set_index("descricao")
+
+    assert por_descricao.loc["relógio", "parcela_atual"] == 4
+    assert por_descricao.loc["relógio", "parcela_total"] == 10
+    assert pd.isna(por_descricao.loc["gympass", "parcela_atual"])
+    assert pd.isna(por_descricao.loc["gympass", "parcela_total"])
+
+
+def test_total_fixas_ja_inclui_as_parcelas(df_agosto: pd.DataFrame) -> None:
+    """Parcela é recorte DENTRO da fixa: 793 com 293 dentro, não 793 + 293."""
+    resultado = financas.listar_lancamentos(df_agosto, "2026-08")
+
+    fixas = financas._d(resultado["total_fixas"])
+    parcelas = financas._d(resultado["total_parcelas"])
+    variadas = financas._d(resultado["total_variadas"])
+
+    assert parcelas < fixas
+    # As saídas do mês são fixas + variadas. Somar as parcelas conta duas vezes.
+    assert financas._r2(fixas + variadas) == 953.00
+    assert financas._r2(fixas + parcelas + variadas) != 953.00
+
+    somente_parcelas = financas.listar_lancamentos(
+        df_agosto, "2026-08", apenas_parcelas=True
+    )
+    assert somente_parcelas["total_fixas"] == resultado["total_parcelas"]
+
+
+def test_listar_lancamentos_com_filtros_combinados(df_agosto: pd.DataFrame) -> None:
+    resultado = financas.listar_lancamentos(
+        df_agosto, "2026-08", tipo="saida", natureza="fixa"
+    )
+    linhas = resultado["lancamentos"]
+
+    assert list(linhas["descricao"]) == ["faculdade", "hyrox", "gympass", "relógio"]
+    assert set(linhas["tipo"]) == {"saida"}
+    assert set(linhas["natureza"]) == {"fixa"}
+
+    # Subtotais são do recorte filtrado: entrada e variada saíram da conta.
+    assert resultado["total_entradas"] == 0.0
+    assert resultado["total_variadas"] == 0.0
+    assert resultado["total_fixas"] == 793.00
+    assert resultado["total_parcelas"] == 293.00
+
+
+def test_listar_lancamentos_apenas_parcelas(df_agosto: pd.DataFrame) -> None:
+    resultado = financas.listar_lancamentos(df_agosto, "2026-08", apenas_parcelas=True)
+    linhas = resultado["lancamentos"]
+
+    assert list(linhas["descricao"]) == ["hyrox", "relógio"]
+    assert linhas["parcela_total"].notna().all()
+    assert resultado["total_parcelas"] == 293.00
+
+
+def test_listar_lancamentos_filtra_por_status(df_agosto: pd.DataFrame) -> None:
+    resultado = financas.listar_lancamentos(df_agosto, "2026-08", status="recebido")
+
+    assert list(resultado["lancamentos"]["descricao"]) == ["salário"]
+    assert resultado["total_entradas"] == 2500.00
+
+
+def test_listar_lancamentos_mes_vazio(df_agosto: pd.DataFrame) -> None:
+    resultado = financas.listar_lancamentos(df_agosto, "2026-01")
+
+    assert resultado["lancamentos"].empty
+    assert list(resultado["lancamentos"].columns) == financas.COLUNAS_LISTAGEM
+    assert resultado["total_entradas"] == 0.0
+    assert resultado["total_fixas"] == 0.0
+    assert resultado["total_parcelas"] == 0.0
+    assert resultado["total_variadas"] == 0.0
+
+
+def test_listar_lancamentos_aceita_o_plural_com_acento(
+    df_agosto: pd.DataFrame,
+) -> None:
+    """'saídas' tem que achar as saídas — filtro escrito assim é comum."""
+    com_acento = financas.listar_lancamentos(df_agosto, "2026-08", tipo="Saídas")
+    normalizado = financas.listar_lancamentos(df_agosto, "2026-08", tipo="saida")
+
+    assert list(com_acento["lancamentos"]["descricao"]) == list(
+        normalizado["lancamentos"]["descricao"]
+    )
+
+
+def test_listar_lancamentos_recusa_filtro_inexistente(
+    df_agosto: pd.DataFrame,
+) -> None:
+    """Filtro errado não pode virar lista vazia em silêncio."""
+    with pytest.raises(ValueError, match="tipo inválido"):
+        financas.listar_lancamentos(df_agosto, "2026-08", tipo="despesa")
+
+    with pytest.raises(ValueError, match="natureza inválida"):
+        financas.listar_lancamentos(df_agosto, "2026-08", natureza="recorrente")
+
+
+# --------------------------------------------------------------------------
 # compromissos_futuros e parcelas_em_aberto
 # --------------------------------------------------------------------------
 def test_compromissos_futuros_enxerga_parcela_5_de_10(

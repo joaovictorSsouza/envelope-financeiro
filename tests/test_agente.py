@@ -760,7 +760,7 @@ def test_todas_as_tools_convertem_para_o_schema_do_gemini() -> None:
     convertidas = _function_utils.convert_to_genai_function_declarations(list(TOOLS))
     declaracoes = convertidas[0].function_declarations
 
-    assert len(declaracoes) == len(TOOLS) == 17
+    assert len(declaracoes) == len(TOOLS) == 18
 
     for declaracao in declaracoes:
         propriedades = (declaracao.parameters.properties or {}).items()

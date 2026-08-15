@@ -425,6 +425,56 @@ def ver_gastos_por_categoria(mes_ref: str | None = None) -> dict[str, Any]:
 
 @tool
 @_protegido
+def listar_lancamentos(
+    mes_ref: str | None = None,
+    tipo: str | None = None,
+    natureza: str | None = None,
+    status: str | None = None,
+    apenas_parcelas: bool = False,
+) -> dict[str, Any]:
+    """Lista os lançamentos de um mês um a um, com os subtotais do recorte.
+
+    Use quando o usuário quiser ver as LINHAS e não o total: "quais são as
+    saídas de setembro?", "o que eu tenho de fixa esse mês?", "do que é feito
+    esse valor?", "quanto ainda está previsto?". É a única tool que devolve
+    os lançamentos individuais — as outras devolvem total ou agrupamento.
+    Sem `mes_ref`, usa o mês corrente.
+
+    Filtros, todos opcionais e combináveis: `tipo` ("entrada"/"saida"),
+    `natureza` ("fixa"/"variada"), `status` ("pago"/"recebido"/"previsto") e
+    `apenas_parcelas` (só o que é parcela de algo).
+
+    Os subtotais são do recorte já filtrado e NÃO são quatro fatias
+    paralelas: `total_parcelas` está DENTRO de `total_fixas` — é um recorte
+    das fixas, não uma categoria ao lado delas. As saídas do mês são
+    `total_fixas + total_variadas`. Nunca apresente as parcelas somadas às
+    fixas nem some as duas: o mesmo dinheiro entraria duas vezes e a conta
+    não fecha.
+
+    Só mostra o que já está lançado — nada é projetado. Mês que ainda não foi
+    gerado volta com a lista vazia; nesse caso o que responde é
+    `ver_planejamento` (o que falta lançar) ou `ver_orcamento` (a prévia).
+
+    NÃO use para o total agrupado por categoria (`ver_gastos_por_categoria`),
+    para saber quanto ainda dá para gastar (`ver_acompanhamento`) nem para os
+    parcelamentos inteiros com o que falta pagar (`ver_parcelas_em_aberto`).
+    """
+    mes = _mes_corrente(mes_ref)
+    df = sheets.ler_lancamentos()
+    return _json(
+        financas.listar_lancamentos(
+            df,
+            mes,
+            tipo=tipo,
+            natureza=natureza,
+            status=status,
+            apenas_parcelas=apenas_parcelas,
+        )
+    )
+
+
+@tool
+@_protegido
 def ver_compromissos_futuros(
     mes_ref: str | None = None, n_meses: int = 12
 ) -> dict[str, Any]:
@@ -926,6 +976,7 @@ TOOLS_LEITURA: Final[list[Any]] = [
     ver_acompanhamento,
     ver_resumo,
     ver_gastos_por_categoria,
+    listar_lancamentos,
     ver_compromissos_futuros,
     ver_parcelas_em_aberto,
     ver_planejamento,

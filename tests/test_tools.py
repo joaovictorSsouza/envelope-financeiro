@@ -252,6 +252,9 @@ CHAMADAS_DE_LEITURA: list[tuple[Any, dict[str, Any]]] = [
     (tools.ver_acompanhamento, {"mes_ref": MES}),
     (tools.ver_resumo, {"mes_ref": MES}),
     (tools.ver_gastos_por_categoria, {"mes_ref": MES}),
+    (tools.listar_lancamentos, {}),
+    (tools.listar_lancamentos, {"mes_ref": MES}),
+    (tools.listar_lancamentos, {"mes_ref": MES, "tipo": "saida", "natureza": "fixa"}),
     (tools.ver_compromissos_futuros, {"mes_ref": MES, "n_meses": 3}),
     (tools.ver_parcelas_em_aberto, {"mes_ref": MES}),
     (tools.ver_planejamento, {"mes_ref": MES_SEGUINTE}),
@@ -342,7 +345,7 @@ def test_valores_monetarios_sao_float_com_2_casas(
 
 def test_toda_tool_tem_descricao_para_o_modelo() -> None:
     """O docstring é o que o modelo lê para escolher — não pode faltar."""
-    assert len(tools.TOOLS) == 17
+    assert len(tools.TOOLS) == 18
     for ferramenta in tools.TOOLS:
         assert ferramenta.description and len(ferramenta.description) > 80
         assert ferramenta.name == ferramenta.func.__name__
@@ -954,6 +957,121 @@ def test_corrigir_lancamento_com_ambiguidade_devolve_candidatos(
     assert resultado["erro"] == "ambiguo"
     assert len(resultado["candidatos"]) == 2
     assert "gravado" not in resultado
+
+
+# --------------------------------------------------------------------------
+# listar_lancamentos
+# --------------------------------------------------------------------------
+def test_listar_lancamentos_devolve_as_linhas_como_lista_de_dicts(
+    sheets_mockado: dict[str, list[Any]],
+) -> None:
+    resultado = tools.listar_lancamentos.invoke({"mes_ref": MES})
+
+    assert isinstance(resultado["lancamentos"], list)
+    assert all(isinstance(linha, dict) for linha in resultado["lancamentos"])
+    assert [linha["descricao"] for linha in resultado["lancamentos"]] == [
+        "salário",
+        "gympass",
+        "relógio",
+        "mercado",
+    ]
+    _serializavel(resultado)
+
+
+def test_listar_lancamentos_traz_os_quatro_subtotais(
+    sheets_mockado: dict[str, list[Any]],
+) -> None:
+    """A fixture tem uma parcela dentro das fixas: 283 com 133 dentro."""
+    resultado = tools.listar_lancamentos.invoke({"mes_ref": MES})
+
+    assert resultado["total_entradas"] == 2500.00
+    assert resultado["total_fixas"] == 283.00  # gympass 150 + relógio 133
+    assert resultado["total_parcelas"] == 133.00  # o relógio, que já está nas fixas
+    assert resultado["total_variadas"] == 160.00
+
+
+def test_listar_lancamentos_marca_a_parcela_e_deixa_o_resto_nulo(
+    sheets_mockado: dict[str, list[Any]],
+) -> None:
+    """NaN do pandas nunca chega ao modelo: vira None e sobrevive ao json."""
+    linhas = tools.listar_lancamentos.invoke({"mes_ref": MES})["lancamentos"]
+    por_descricao = {linha["descricao"]: linha for linha in linhas}
+
+    assert por_descricao["relógio"]["parcela_atual"] == 4
+    assert por_descricao["relógio"]["parcela_total"] == 10
+    assert por_descricao["gympass"]["parcela_atual"] is None
+    assert por_descricao["gympass"]["parcela_total"] is None
+    _serializavel(linhas)
+
+
+def test_listar_lancamentos_sem_argumento_usa_o_mes_de_acompanhamento(
+    monkeypatch: pytest.MonkeyPatch, sheets_mockado: dict[str, list[Any]]
+) -> None:
+    hoje = date(2026, 8, 13)
+    monkeypatch.setattr(
+        tools.financas,
+        "mes_de_acompanhamento",
+        lambda *a, **k: financas.mes_ref_de_hoje(hoje),
+    )
+    monkeypatch.setattr(
+        tools.financas, "mes_de_planejamento", lambda *a, **k: "NAO-DEVE-USAR"
+    )
+
+    resultado = tools.listar_lancamentos.invoke({})
+
+    assert resultado["mes_ref"] == MES
+    assert resultado["total_entradas"] == 2500.00
+
+
+def test_listar_lancamentos_com_filtros_combinados(
+    sheets_mockado: dict[str, list[Any]],
+) -> None:
+    resultado = tools.listar_lancamentos.invoke(
+        {"mes_ref": MES, "tipo": "saida", "natureza": "fixa"}
+    )
+
+    assert [linha["descricao"] for linha in resultado["lancamentos"]] == [
+        "gympass",
+        "relógio",
+    ]
+    assert resultado["total_entradas"] == 0.0
+    assert resultado["total_variadas"] == 0.0
+    assert resultado["total_fixas"] == 283.00
+
+
+def test_listar_lancamentos_apenas_parcelas(
+    sheets_mockado: dict[str, list[Any]],
+) -> None:
+    resultado = tools.listar_lancamentos.invoke(
+        {"mes_ref": MES, "apenas_parcelas": True}
+    )
+
+    assert [linha["descricao"] for linha in resultado["lancamentos"]] == ["relógio"]
+    assert all(
+        linha["parcela_total"] is not None for linha in resultado["lancamentos"]
+    )
+    assert resultado["total_parcelas"] == 133.00
+
+
+def test_listar_lancamentos_de_mes_sem_dado_volta_vazio_sem_projetar(
+    sheets_mockado: dict[str, list[Any]],
+) -> None:
+    """Esta tool não projeta: mês não gerado é lista vazia, não estimativa."""
+    resultado = tools.listar_lancamentos.invoke({"mes_ref": MES_SEGUINTE})
+
+    assert resultado["lancamentos"] == []
+    assert resultado["total_fixas"] == 0.0
+    assert resultado["total_entradas"] == 0.0
+
+
+def test_listar_lancamentos_com_filtro_invalido_vira_dict_de_erro(
+    sheets_mockado: dict[str, list[Any]],
+) -> None:
+    resultado = tools.listar_lancamentos.invoke({"mes_ref": MES, "tipo": "despesa"})
+
+    assert "tipo inválido" in resultado["erro"]
+    assert resultado["sugestao"]
+    _serializavel(resultado)
 
 
 # --------------------------------------------------------------------------

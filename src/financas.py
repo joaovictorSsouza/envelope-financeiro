@@ -456,6 +456,132 @@ def gastos_por_categoria(df: pd.DataFrame, mes_ref: str) -> pd.DataFrame:
 
 
 # --------------------------------------------------------------------------
+# 2b. lançamentos individuais do mês
+# --------------------------------------------------------------------------
+COLUNAS_LISTAGEM: Final[list[str]] = [
+    "descricao",
+    "valor",
+    "tipo",
+    "natureza",
+    "categoria",
+    "status",
+    "parcela_atual",
+    "parcela_total",
+]
+
+TIPOS: Final[frozenset[str]] = frozenset({"entrada", "saida"})
+NATUREZAS: Final[frozenset[str]] = frozenset({"fixa", "variada"})
+
+ORDEM_NATUREZA: Final[dict[str, int]] = {"fixa": 0, "variada": 1}
+"""Fixa antes de variada. Natureza desconhecida vai para o fim."""
+
+_APELIDOS: Final[dict[str, str]] = {
+    "saída": "saida",
+    "saídas": "saida",
+    "saidas": "saida",
+    "entradas": "entrada",
+}
+"""O filtro vem de texto livre: 'saídas' tem que achar as saídas, não zero."""
+
+
+def _filtro(valor: str, permitidos: frozenset[str], rotulo: str) -> str:
+    """Normaliza o filtro e recusa o que não existe.
+
+    Recusar é melhor que devolver lista vazia: filtro escrito errado some
+    com todas as linhas em silêncio, e quem lê acha que o mês está vazio.
+    """
+    texto = str(valor).strip().lower()
+    texto = _APELIDOS.get(texto, texto)
+    if texto not in permitidos:
+        opcoes = ", ".join(sorted(permitidos))
+        raise ValueError(f"{rotulo}: {valor!r}. Use um de: {opcoes}")
+    return texto
+
+
+def _tabela_de_lancamentos(df_mes: pd.DataFrame) -> pd.DataFrame:
+    """Fixas primeiro, e dentro de cada natureza do maior valor para o menor."""
+    if df_mes.empty:
+        return pd.DataFrame(columns=COLUNAS_LISTAGEM)
+
+    ordem = pd.to_numeric(
+        _coluna(df_mes, "natureza").map(ORDEM_NATUREZA), errors="coerce"
+    ).fillna(len(ORDEM_NATUREZA))
+    return (
+        df_mes.assign(_ordem=ordem)
+        .sort_values(
+            ["_ordem", "valor", "descricao"], ascending=[True, False, True]
+        )
+        .reset_index(drop=True)[COLUNAS_LISTAGEM]
+    )
+
+
+def listar_lancamentos(
+    df: pd.DataFrame,
+    mes_ref: str,
+    tipo: str | None = None,
+    natureza: str | None = None,
+    status: str | None = None,
+    apenas_parcelas: bool = False,
+) -> dict[str, Any]:
+    """Os lançamentos de um mês, um a um, mais os subtotais desse recorte.
+
+    Existe para responder "quais são as saídas de setembro?": as outras
+    funções devolvem total ou agrupamento, e nenhuma mostra as linhas que
+    compõem o número.
+
+    Ordem: fixas antes das variadas e, dentro de cada natureza, do maior
+    valor para o menor. `parcela_atual` e `parcela_total` vêm preenchidos só
+    nas linhas que são parcela de algo; nas demais, None.
+
+    Os quatro subtotais são do recorte JÁ FILTRADO — filtrar muda a lista e
+    os totais juntos. O encaixe entre eles não é plano:
+
+        total_entradas
+        total_fixas      ← já INCLUI total_parcelas
+          total_parcelas   (recorte DENTRO das fixas, não categoria irmã)
+        total_variadas
+
+    Saídas do mês = total_fixas + total_variadas. Somar `total_parcelas` aí
+    conta o mesmo dinheiro duas vezes.
+
+    `tipo` e `natureza` só aceitam os valores que existem na planilha
+    ("entrada"/"saida", "fixa"/"variada"); qualquer outra coisa levanta
+    ValueError em vez de devolver lista vazia. `status` é livre (pago,
+    recebido, previsto). `apenas_parcelas` deixa só as linhas parceladas.
+    """
+    filtro_tipo = _filtro(tipo, TIPOS, "tipo inválido") if tipo is not None else None
+    filtro_natureza = (
+        _filtro(natureza, NATUREZAS, "natureza inválida")
+        if natureza is not None
+        else None
+    )
+    filtro_status = str(status).strip().lower() if status is not None else None
+
+    do_mes = _do_mes(df, mes_ref)
+    if not do_mes.empty:
+        marca = pd.Series(True, index=do_mes.index)
+        if filtro_tipo is not None:
+            marca &= _coluna(do_mes, "tipo") == filtro_tipo
+        if filtro_natureza is not None:
+            marca &= _coluna(do_mes, "natureza") == filtro_natureza
+        if filtro_status is not None:
+            marca &= _coluna(do_mes, "status") == filtro_status
+        if apenas_parcelas:
+            marca &= do_mes["parcela_total"].notna()
+        do_mes = do_mes[marca.fillna(False).astype(bool)]
+
+    totais = _totais(do_mes)
+    return {
+        "mes_ref": mes_ref,
+        "lancamentos": _tabela_de_lancamentos(do_mes),
+        "total_entradas": totais["entradas"],
+        "total_fixas": totais["saida_fixa"],
+        "total_parcelas": _parcelas_do_mes(do_mes),
+        "total_variadas": totais["saida_variada"],
+    }
+
+
+# --------------------------------------------------------------------------
 # 3. compromissos futuros
 # --------------------------------------------------------------------------
 def compromissos_futuros(

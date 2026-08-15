@@ -199,6 +199,7 @@ com 2 casas; escrever "R$ 1.234,56" é trabalho da camada de resposta.
 | `ver_acompanhamento(mes_ref)` | leitura | corrente |
 | `ver_resumo(mes_ref)` | leitura | corrente |
 | `ver_gastos_por_categoria(mes_ref)` | leitura | corrente |
+| `listar_lancamentos(mes_ref, tipo, natureza, status, apenas_parcelas)` | leitura | corrente |
 | `ver_compromissos_futuros(mes_ref, n_meses=12)` | leitura | corrente |
 | `ver_parcelas_em_aberto(mes_ref)` | leitura | corrente |
 | `ver_planejamento(mes_ref)` | leitura | **seguinte** |
@@ -394,7 +395,7 @@ O Gemini é mais rígido que o Claude com o JSON Schema das ferramentas, e
 `bind_tools` **não** verifica isso: ele guarda as tools no formato OpenAI e a
 conversão só acontece no request. Quem converte é
 `convert_to_genai_function_declarations`, e é ela que
-`test_todas_as_tools_convertem_para_o_schema_do_gemini` chama — as 17 tools,
+`test_todas_as_tools_convertem_para_o_schema_do_gemini` chama — as 18 tools,
 campo a campo, sem rede.
 
 As assinaturas atuais passam sem mudança: `str | None = None` vira `STRING
