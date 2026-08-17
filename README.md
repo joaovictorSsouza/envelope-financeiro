@@ -500,6 +500,50 @@ consistente, as respostas começam a valer.
 
 ### Outros itens
 
+- **Integração com Open Finance (Pluggy)**
+
+  Cadastro feito no meu.pluggy com as contas bancárias conectadas. A partir
+  daí o agente pode ler transações reais — entradas e saídas — em vez de
+  depender de lançamento manual pelo Telegram.
+
+  Escopo: a Pluggy é **somente leitura**. Ela expõe extrato, saldo e faturas
+  de cartão; não movimenta dinheiro. A planilha continua sendo a fonte de
+  verdade das REGRAS (envelope, reserva, parcelas, recorrentes); a Pluggy
+  passa a ser a fonte dos FATOS (o que de fato entrou e saiu).
+
+  Arquitetura pretendida, seguindo o padrão já usado no projeto:
+
+  - `pluggy.py` — cliente da API, único ponto de I/O com o banco. Mesmo
+    desenho de `api.py`: retry, cache, exceção própria.
+  - As transações NÃO viram linha na planilha automaticamente. O fluxo é o
+    mesmo dois-passos das escritas de alto risco: o agente propõe
+    ("apareceram 4 transações novas: R$ 38 iFood, R$ 210 mercado..."), sugere
+    categoria e natureza, e só grava com confirmação.
+  - Deduplicação obrigatória: um gasto lançado à mão pelo Telegram e o mesmo
+    gasto vindo do extrato não podem virar duas linhas. Chave provável:
+    valor + data aproximada + conta de origem, com o `id` da transação da
+    Pluggy guardado numa coluna nova de LANCAMENTOS.
+  - Categorização: a Pluggy devolve categoria própria, que precisa ser
+    mapeada para as categorias da aba CONFIG.
+
+  Decisões em aberto:
+
+  - Sincronização sob demanda ("puxa o extrato") ou rotina agendada?
+  - O que fazer com transação que o usuário não reconhece — ignorar, marcar
+    para revisão, ou lançar como "Outros"?
+  - Contas conectadas são apenas contas correntes (sem cartão de crédito),
+    então cada transação do extrato é dinheiro que já entrou ou saiu de fato.
+    Se um cartão for conectado no futuro, será preciso decidir antes como
+    modelar a fatura: as compras aparecem na data em que foram feitas, mas o
+    dinheiro só sai no vencimento — lançar as duas coisas conta em dobro.
+  - Como conciliar parcelamento já cadastrado na planilha com as parcelas
+    que vão aparecer no extrato mês a mês.
+
+  Segurança: as credenciais da Pluggy (client_id e client_secret) vão para o
+  `.env`, nunca no código nem no repositório. Vale considerar chaves
+  separadas para ambiente local e de produção, como já vale para o token do
+  Web App e a chave do Gemini.
+
 - **Prévia de `simular_geracao_mes`** — hoje lista só as linhas que serão
   criadas, o que dá a impressão de que aquilo é o mês inteiro. Deveria mostrar
   também o que já está lançado no mês (parcelas) e o envelope resultante.
